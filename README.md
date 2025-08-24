@@ -34,11 +34,21 @@ Sistem ini terdiri dari beberapa komponen utama yang bekerja secara harmonis:
 
 ## Prasyarat
 
-- Python 3.10+
-- NVIDIA GPU (Seri RTX 30 atau lebih baru direkomendasikan)
-- **Driver NVIDIA** (versi terbaru, diinstal langsung dari situs resmi NVIDIA untuk performa maksimal)
-- **CUDA Toolkit 13.0+**
-- Microsoft SQL Server
+### Perangkat Lunak
+- **Sistem Operasi**: Fedora Workstation (Sangat Direkomendasikan)
+- **Python**: 3.13+
+- **NVIDIA Stack**:
+  - **Driver NVIDIA**: Versi 13+ (atau yang kompatibel dengan CUDA 13)
+  - **CUDA Toolkit**: Versi 13.0+
+- **Microsoft SQL Server**
+
+### Perangkat Keras (Konfigurasi yang Diuji)
+- **GPU**: NVIDIA GeForce RTX 4060 8GB
+- **CPU**: Intel Core i9-13900H
+- **RAM**: 64GB
+- **Penyimpanan**: 1TB SSD
+
+> **Catatan Instalasi Penting**: Untuk performa dan stabilitas maksimal, sangat disarankan untuk menginstal driver NVIDIA dan CUDA Toolkit langsung dari situs resmi NVIDIA. **Jangan gunakan installer dari repositori pihak ketiga seperti RPM Fusion.** Jika Anda sudah menginstalnya, hapus terlebih dahulu atau gunakan flag `--allowerasing` saat menjalankan skrip instalasi resmi dari NVIDIA untuk memastikan instalasi yang bersih.
 
 ## Pengaturan & Instalasi
 
