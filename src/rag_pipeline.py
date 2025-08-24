@@ -11,6 +11,7 @@ from src.embedding_models import generate_embedding_for_chunk
 from src.prediction_models import LSTMModel, predict_with_lstm
 from sklearn.impute import SimpleImputer
 import joblib
+from .config import NUM_PREDICTION_SHOTS, PREDICTION_NOISE_LEVEL
 
 # --- Konfigurasi Global ---
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -41,20 +42,10 @@ def _preprocess_query_data(query_df: pd.DataFrame, scaler_path: str, feature_key
         df_processed['log_result_front'] = pd.to_numeric(df_processed['LogResult'].str[0:2], errors='coerce')
         df_processed['log_result_mid'] = pd.to_numeric(df_processed['LogResult'].str[1:3], errors='coerce')
         df_processed['log_result_back'] = pd.to_numeric(df_processed['LogResult'].str[2:4], errors='coerce')
-        if os.path.exists(ENCODER_LOG_RESULT_PATH):
-            encoder_log_result = joblib.load(ENCODER_LOG_RESULT_PATH)
-            log_result_encoded = encoder_log_result.transform(df_processed[['LogResult']])
-            log_result_df = pd.DataFrame(log_result_encoded, columns=encoder_log_result.get_feature_names_out(['LogResult']), index=df_processed.index)
-            df_processed = pd.concat([df_processed, log_result_df], axis=1)
         categorical_cols = ['log_result_front', 'log_result_mid', 'log_result_back']
         # Best Practice: Avoid 'inplace=True' on chained assignments to prevent FutureWarning.
         # Explicitly assign the result back to the DataFrame columns.
         for col in categorical_cols: df_processed[col] = df_processed[col].fillna(-1)
-        if os.path.exists(ENCODER_PARTS_PATH):
-            encoder_parts = joblib.load(ENCODER_PARTS_PATH)
-            parts_encoded = encoder_parts.transform(df_processed[categorical_cols])
-            parts_df = pd.DataFrame(parts_encoded, columns=encoder_parts.get_feature_names_out(categorical_cols), index=df_processed.index)
-            df_processed = pd.concat([df_processed, parts_df], axis=1)
     numerical_cols = ['As', 'Kop', 'Kepala', 'Ekor', 'Id']
     imputer_num = SimpleImputer(strategy='mean')
     df_processed[numerical_cols] = imputer_num.fit_transform(df_processed[numerical_cols])
@@ -141,12 +132,30 @@ def run_rag_prediction(
         num_layers=num_layers
     )
     prediction_model.load_state_dict(state_dict)
+    # Best Practice: Pindahkan model prediksi ke perangkat yang benar (GPU/CPU).
+    prediction_model.to(device)
     
     # 6. Lakukan prediksi menggunakan LSTM
     # Fungsi predict_with_lstm akan mengembalikan fitur-fitur dari timestep selanjutnya
-    predicted_features = predict_with_lstm(
-        model=prediction_model,
-        input_sequence=augmented_input_sequence
-    )
+    # --- Implementasi Multi-Shot Prediction ---
+    base_input_tensor = torch.tensor(augmented_input_sequence, dtype=torch.float32).unsqueeze(0).to(device)
+    all_predicted_features = []
 
-    return predicted_features
+    with torch.no_grad():
+        for shot in range(NUM_PREDICTION_SHOTS):
+            # 1. Buat input yang sedikit berbeda untuk setiap tembakan dengan menambahkan noise
+            if shot > 0:
+                # Gunakan noise yang lebih kecil untuk input agar tidak terlalu menyimpang dari konteks RAG
+                input_noise = torch.randn_like(base_input_tensor) * (PREDICTION_NOISE_LEVEL / 5)
+                live_input_tensor = base_input_tensor + input_noise
+            else:
+                live_input_tensor = base_input_tensor
+
+            # 2. Dapatkan prediksi untuk tembakan ini
+            # Kita tidak memanggil predict_with_lstm karena kita sudah punya modelnya di sini
+            prediction_output = prediction_model(live_input_tensor)
+            all_predicted_features.append(prediction_output.squeeze(0).cpu().numpy())
+
+    # Kembalikan sebagai batch numpy array
+    # Shape: (NUM_PREDICTION_SHOTS, num_features)
+    return np.array(all_predicted_features)

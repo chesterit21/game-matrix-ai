@@ -136,7 +136,7 @@ def generate_embedding_for_chunk(
         raise ValueError(f"Tipe model tidak dikenal: {model_type}")
 
     model.load_state_dict(state_dict)
-    # 3. Pindahkan model ke perangkat (penting setelah inisialisasi)
+    # 3. Best Practice: Pindahkan model ke perangkat yang benar (GPU/CPU) setelah dimuat.
     model.to(device)
     model.eval()
 

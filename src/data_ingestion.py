@@ -75,6 +75,25 @@ def save_predictions_to_db(connection_string: str, game_code: str, predictions_s
         print(f"Kesalahan database saat menyimpan prediksi: {ex}")
         raise
 
+def update_training_game_status(connection_string: str, game_code: str):
+    """Mengupdate status IsActive menjadi 0 untuk game_code tertentu di tabel TRAININGGAME."""
+    try:
+        engine = _get_sqlalchemy_engine(connection_string)
+        with engine.connect() as connection:
+            with connection.begin() as transaction:
+                try:
+                    stmt = text("UPDATE TRAININGGAME SET IsActive = 0 WHERE GameCode = :game_code")
+                    connection.execute(stmt, {"game_code": game_code})
+                    transaction.commit()
+                    print(f"Status untuk GameCode '{game_code}' berhasil diupdate menjadi tidak aktif (IsActive = 0).")
+                except Exception as e:
+                    print(f"Gagal mengupdate status untuk {game_code}, transaksi dibatalkan: {e}")
+                    transaction.rollback()
+                    raise
+    except SQLAlchemyError as ex:
+        print(f"Kesalahan database saat mengupdate status: {ex}")
+        raise
+
 def preprocess_data_for_embedding(
     df: pd.DataFrame, 
     chunk_size: int, 

@@ -5,7 +5,7 @@ import shutil
 import pandas as pd
 import json
 import numpy as np
-from src.data_ingestion import fetch_data_from_sql_server, preprocess_data_for_embedding, save_documents_to_folder, save_predictions_to_db
+from src.data_ingestion import fetch_data_from_sql_server, preprocess_data_for_embedding, save_documents_to_folder, save_predictions_to_db, update_training_game_status
 from src.config import SQL_CONNECTION_STRING, DOCS_FOLDER, CHROMA_DB_PERSIST_DIR, CHROMA_COLLECTION_NAME, TRAINED_FILES_DIR, ARTIFACTS_DIR, PIPELINE_WINDOW_SIZE, OVERLAP_SIZE, EMBEDDING_MODEL_TYPES, PREDICTION_HORIZON, N_RETRIEVED_CHUNKS
 from src.embedding_models import generate_embedding_for_chunk
 from src.chromadb_handler import initialize_chromadb, store_embeddings_in_chromadb
@@ -16,16 +16,15 @@ SQL_QUERY_MASTER = "SELECT GameCode FROM TRAININGGAME WHERE IsActive = 1;"
 SQL_QUERY_LOG = "SELECT Id, GameCode, Periode, LogResult, [As], Kop, Kepala, Ekor,DateResultInGame FROM LogGame WHERE GameCode='{gameCode}' AND Periode > 1150 ORDER BY Periode ASC;"
 SQL_QUERY_HISTORICAL = "SELECT LogResult FROM LogGame WHERE GameCode='{gameCode}' ORDER BY Periode DESC;"
 
-def decode_features_to_numbers(predicted_features: np.ndarray, scaler, feature_keys: list) -> set:
+def decode_features_to_numbers(predicted_features_batch: np.ndarray, scaler, feature_keys: list) -> set:
     """
-    Mengubah array fitur yang diprediksi menjadi satu set angka 4-digit yang beragam.
-    Logika ini disamakan dengan _decode_predicted_features_to_number di train.py untuk konsistensi
-    dan dioptimalkan menggunakan operasi vectorized NumPy.
+    Mengubah BATCH fitur yang diprediksi menjadi satu set angka 4-digit yang beragam.
+    Logika ini disamakan dengan _decode_predicted_features_to_number di train.py untuk konsistensi.
     """
-    if predicted_features is None or predicted_features.size == 0:
+    if predicted_features_batch is None or predicted_features_batch.size == 0:
         return set()
 
-    pred_df = pd.DataFrame([predicted_features], columns=feature_keys)
+    pred_df = pd.DataFrame(predicted_features_batch, columns=feature_keys)
 
     numerical_cols = ['As', 'Kop', 'Kepala', 'Ekor', 'Id']
     cols_to_transform = [col for col in numerical_cols if col in pred_df.columns]
@@ -37,14 +36,29 @@ def decode_features_to_numbers(predicted_features: np.ndarray, scaler, feature_k
     inversed_features = scaler.inverse_transform(pred_df[cols_to_transform])
     inversed_df = pd.DataFrame(inversed_features, columns=cols_to_transform)
 
-    # Gunakan logika yang sama persis dengan train.py untuk konsistensi
-    vals = inversed_df[cols_for_number].values[0] # Ambil baris pertama
-    as_candidates = {int(np.clip(f(vals[0]), 0, 9)) for f in (np.floor, np.ceil)}
-    kop_candidates = {int(np.clip(f(vals[1]), 0, 9)) for f in (np.floor, np.ceil)}
-    kepala_candidates = {int(np.clip(f(vals[2]), 0, 9)) for f in (np.floor, np.ceil)}
-    ekor_candidates = {int(np.clip(f(vals[3]), 0, 9)) for f in (np.floor, np.ceil)}
+    # Get all values at once for efficiency
+    as_vals = inversed_df['As'].values
+    kop_vals = inversed_df['Kop'].values
+    kepala_vals = inversed_df['Kepala'].values
+    ekor_vals = inversed_df['Ekor'].values
 
-    predicted_numbers = {f"{a}{k}{ke}{e}" for a in as_candidates for k in kop_candidates for ke in kepala_candidates for e in ekor_candidates}
+    predicted_numbers = set()
+    num_predictions = len(inversed_df)
+
+    # Loop through each prediction in the batch
+    for i in range(num_predictions):
+        # For each prediction, get the floor/ceil candidates
+        as_candidates = {int(np.clip(f(as_vals[i]), 0, 9)) for f in (np.floor, np.ceil)}
+        kop_candidates = {int(np.clip(f(kop_vals[i]), 0, 9)) for f in (np.floor, np.ceil)}
+        kepala_candidates = {int(np.clip(f(kepala_vals[i]), 0, 9)) for f in (np.floor, np.ceil)}
+        ekor_candidates = {int(np.clip(f(ekor_vals[i]), 0, 9)) for f in (np.floor, np.ceil)}
+
+        # Generate combinations for this single prediction
+        for a in as_candidates:
+            for k in kop_candidates:
+                for ke in kepala_candidates:
+                    for e in ekor_candidates:
+                        predicted_numbers.add(f"{a}{k}{ke}{e}")
     return predicted_numbers
 
 def run_prediction_pipeline_for_game_code(game_code: str):
@@ -88,7 +102,7 @@ def run_prediction_pipeline_for_game_code(game_code: str):
                 if filename.endswith(".json"):
                     file_path = os.path.join(game_docs_folder, filename)
                     with open(file_path, 'r') as f: doc_data = json.load(f)
-                    embedding_vector = generate_embedding_for_chunk(doc_data, model_type=first_model_type, model_path=first_embedding_model_path)
+                    embedding_vector = generate_embedding_for_chunk(doc_data, model_type=first_model_type, model_path=first_embedding_model_path, feature_keys_path=feature_keys_path)
                     doc_data["embedding_vector"] = embedding_vector.tolist()
                     documents_with_embeddings.append(doc_data)
             
@@ -202,6 +216,12 @@ def main():
 
     for game_code in game_codes:
         run_prediction_pipeline_for_game_code(game_code)
+        # Setelah pipeline prediksi selesai untuk game_code ini, update statusnya
+        try:
+            print(f"Pipeline prediksi untuk {game_code} selesai. Mengupdate status di database...")
+            update_training_game_status(SQL_CONNECTION_STRING, game_code)
+        except Exception as e:
+            print(f"Gagal mengupdate status untuk {game_code} setelah prediksi: {e}")
 
     print("\n--- Semua Proses Prediksi Selesai ---")
 

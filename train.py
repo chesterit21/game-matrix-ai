@@ -8,8 +8,8 @@ import numpy as np
 import pandas as pd
 import json
 import joblib
-from src.config import *
-from src.data_ingestion import fetch_data_from_sql_server, preprocess_data_for_embedding
+from src.config import SQL_CONNECTION_STRING, ARTIFACTS_DIR, TRAINED_FILES_DIR, PIPELINE_WINDOW_SIZE, ONLINE_TRAINING_EPOCHS, LEARNING_RATE, TARGET_UNIQUE_PREDICTIONS, MAX_TRAINING_RETRIES, RETRY_WINDOW_EXPANSION_STEP, PREDICTION_NOISE_LEVEL, NUM_PREDICTION_SHOTS, EMBEDDING_MODEL_TYPES, EMBEDDING_DIM, LSTM_HIDDEN_DIM, LSTM_NUM_LAYERS
+from src.data_ingestion import fetch_data_from_sql_server, preprocess_data_for_embedding, update_training_game_status
 from src.embedding_models import Time2VecAutoencoder, DWTAutoencoder
 from src.prediction_models import LSTMModel
 
@@ -55,7 +55,9 @@ class OnlineTrainingManager:
             print("Membuat feature_keys awal...")
             # Lakukan preprocessing pada data sampel untuk mendapatkan daftar fitur
             preprocess_data_for_embedding(self.full_data_df.head(PIPELINE_WINDOW_SIZE), PIPELINE_WINDOW_SIZE, 0, self.scaler_path, self.feature_keys_path)
-            with open(self.feature_keys_path, 'r') as f: self.feature_keys = json.load(f)
+            # FIX: Load the newly created scaler and feature keys into the instance
+            self.scaler = joblib.load(self.scaler_path)
+            with open(self.feature_keys_path, 'r') as f: self.feature_keys = json.load(f) # Reload feature keys as well
 
         num_features = len(self.feature_keys)
 
@@ -215,20 +217,14 @@ class OnlineTrainingManager:
                 target_periode = self.full_data_df.iloc[end_idx]['Periode']
                 target_logresult = self.full_data_df.iloc[end_idx]['LogResult']
 
-                # if retries > 0:
-                #     print(f"Percobaan ulang ({retries}/{MAX_TRAINING_RETRIES}) untuk memprediksi Periode {target_periode}...")
-                # else:
-                #     # Cetak informasi hanya pada percobaan pertama untuk periode baru
-                #     window_start_periode = current_window_df.iloc[0]['Periode']
-                #     # end_idx - 1 karena iloc bersifat eksklusif di akhir
-                #     window_end_periode = self.full_data_df.iloc[end_idx - 1]['Periode']
-                #     print("\n" + "="*80)
-                #     print(f"Jendela Training   : Periode {window_start_periode} s/d {window_end_periode} (digunakan untuk belajar)")
-                #     print(f"Target Prediksi    : Periode {target_periode} (hasil aktual: {target_logresult})")
-                #     print("-"*80)
-
-                # if retries > 0:
-                #     print(f"    -> Jendela training diperluas menjadi {actual_window_size} baris data.")
+                # Logging disederhanakan untuk fokus pada hasil.
+                # Informasi detail hanya akan dicetak pada percobaan pertama untuk konteks.
+                if retries == 0:
+                    window_start_periode = current_window_df.iloc[0]['Periode']
+                    window_end_periode = self.full_data_df.iloc[end_idx - 1]['Periode']
+                    print("\n" + "="*80)
+                    print(f"Jendela Training: {window_start_periode} -> {window_end_periode} | Target Prediksi: Periode {target_periode} (Aktual: {target_logresult})")
+                    print("-"*80)
 
                 # --- Sesi Generasi Prediksi Multi-Shot Parallel ---
                 # BEST PRACTICE: Mengatasi "mode collapse" dengan pendekatan ensemble.
@@ -345,6 +341,10 @@ def main():
             
             trainer = OnlineTrainingManager(game_code, df_full_log)
             trainer.run_online_training()
+
+            # Setelah training selesai, update status
+            print(f"Training untuk {game_code} selesai. Mengupdate status di database...")
+            update_training_game_status(SQL_CONNECTION_STRING, game_code)
 
         except Exception as e:
             print(f"Terjadi error saat memproses {game_code}: {e}")
