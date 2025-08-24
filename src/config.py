@@ -25,10 +25,20 @@ OVERLAP_SIZE = 2
 # --- Model Architecture ---
 # Embedding Model
 EMBEDDING_DIM = 128
-EMBEDDING_MODEL_TYPES = ["DWT_Autoencoder", "Time2Vec"]
+EMBEDDING_MODEL_TYPES = ["DWT_Autoencoder", "Time2Vec", "TransformerAutoencoder", "SemanticTransformer"] # Menambah "Mata" keempat
+
+# Transformer Specific Config
+TRANSFORMER_NHEAD = 4
+TRANSFORMER_DIM_FEEDFORWARD = 256
 
 # Prediction Model (LSTM)
 LSTM_HIDDEN_DIM = 128
+GRU_HIDDEN_DIM = 128 # Hidden dimension for the new GRU model
+MLP_HIDDEN_DIMS = [256, 128] # Hidden dimensions for the new MLP model
+VAE_LATENT_DIM = 64 # Latent dimension for the new VAE model
+TCN_NUM_CHANNELS = [64, 128] # Jumlah channel untuk setiap layer TCN
+TCN_KERNEL_SIZE = 3 # Ukuran kernel untuk konvolusi TCN
+TCN_DROPOUT = 0.2 # Dropout rate untuk TCN
 LSTM_NUM_LAYERS = 2
 
 # --- Training Hyperparameters ---

@@ -112,10 +112,16 @@ game-matrix-ai/
 │   └── <GameCode>/
 │       └── chunk_...json
 ├── trained_models/
-│   └── <GameCode>/
-│       └── DWT_Autoencoder_model.pth
-│       └── Time2Vec_model.pth
-│       └── LSTM_model.pth
+│   └── <GameCode>/            # Folder spesifik untuk setiap game
+│       ├── DWT_Autoencoder_model.pth
+│       ├── Time2Vec_model.pth
+│       ├── TransformerAutoencoder_model.pth
+│       ├── LSTM_model.pth
+│       ├── GRU_model.pth
+│       ├── MLP_model.pth
+│       ├── TCN_model.pth
+│       └── XGBoost_models/    # Direktori untuk model-model XGBoost
+│           └── xgb_model_...json
 ├── src/
 │   ├── __init__.py
 │   ├── chromadb_handler.py

@@ -6,6 +6,7 @@ import torch.nn as nn
 import math
 import json
 import os
+from src.config import EMBEDDING_DIM
 
 # --- Konfigurasi Global ---
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -60,6 +61,82 @@ class Time2VecAutoencoder(nn.Module):
         reconstructed_flat = self.decoder(latent_representation)
         return latent_representation, reconstructed_flat
 
+class PositionalEncoding(nn.Module):
+    """Menambahkan informasi posisi ke input sekuens untuk Transformer."""
+    def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
+        super().__init__()
+        self.dropout = nn.Dropout(p=dropout)
+        position = torch.arange(max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
+        pe = torch.zeros(max_len, 1, d_model)
+        pe[:, 0, 0::2] = torch.sin(position * div_term)
+        
+        # Handle odd d_model for the cosine part to prevent size mismatch
+        cos_term = torch.cos(position * div_term)
+        num_odd_indices = d_model // 2
+        pe[:, 0, 1::2] = cos_term[:, :num_odd_indices]
+        self.register_buffer('pe', pe)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x + self.pe[:x.size(1)].transpose(0, 1)
+        return self.dropout(x)
+
+class TransformerAutoencoder(nn.Module):
+    """Model Autoencoder berbasis Transformer untuk menangkap hubungan kontekstual."""
+    def __init__(self, num_features: int, sequence_length: int, latent_dim: int, nhead: int, dim_feedforward: int, num_layers: int):
+        super(TransformerAutoencoder, self).__init__()
+        
+        # Best Practice: Project input features to a dimension divisible by nhead.
+        # We use EMBEDDING_DIM (128) as the internal model dimension.
+        model_dim = EMBEDDING_DIM
+        self.model_dim = model_dim
+        self.sequence_length = sequence_length
+
+        self.input_projection = nn.Linear(num_features, model_dim)
+
+        self.pos_encoder = PositionalEncoding(d_model=model_dim)
+        encoder_layer = nn.TransformerEncoderLayer(d_model=model_dim, nhead=nhead, dim_feedforward=dim_feedforward, batch_first=True)
+        # Best Practice: Secara eksplisit menonaktifkan nested tensor untuk menghilangkan UserWarning.
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers, enable_nested_tensor=False)
+        
+        self.flatten = nn.Flatten()
+        self.encoder_fc = nn.Linear(model_dim * sequence_length, latent_dim)
+        
+        self.decoder = nn.Sequential(
+            nn.Linear(latent_dim, model_dim * sequence_length // 2),
+            nn.ReLU(),
+            nn.Linear(model_dim * sequence_length // 2, model_dim * sequence_length),
+            nn.Sigmoid()
+        )
+        # The final output of the decoder will be reshaped and projected back to the original num_features.
+        # However, to maintain consistency with the other autoencoders that reconstruct a flat tensor,
+        # we will also reconstruct a flat tensor here, but of the original size.
+        self.output_projection = nn.Linear(model_dim * sequence_length, num_features * sequence_length)
+
+    def forward(self, x):
+        # x shape: [batch_size, seq_len, num_features]
+        projected_x = self.input_projection(x)
+        pos_encoded_x = self.pos_encoder(projected_x)
+        encoded_context = self.transformer_encoder(pos_encoded_x)
+        encoded_flat = self.flatten(encoded_context)
+        latent = self.encoder_fc(encoded_flat)
+        
+        # Reconstruct the flat tensor and project it back to the original flat dimension size
+        reconstructed_projected_flat = self.decoder(latent)
+        reconstructed_flat = self.output_projection(reconstructed_projected_flat)
+        return latent, reconstructed_flat
+
+# --- Model 4: Semantic Transformer (Wrapper) ---
+# This is not a trainable nn.Module in our context, but a wrapper for a pre-trained model.
+# We will handle its logic within the `generate_embedding_for_chunk` function.
+SEMANTIC_MODEL_NAME = 'all-MiniLM-L6-v2'
+try:
+    from sentence_transformers import SentenceTransformer
+    semantic_model = SentenceTransformer(SEMANTIC_MODEL_NAME, device=device)
+except Exception as e:
+    print(f"Warning: Could not load SentenceTransformer model '{SEMANTIC_MODEL_NAME}'. Semantic embeddings will be disabled. Error: {e}")
+    semantic_model = None
+
 # --- Model 2: DWT + Autoencoder (Placeholder) ---
 class DWTAutoencoder(nn.Module):
     """Implementasi Autoencoder standar."""
@@ -100,6 +177,14 @@ def generate_embedding_for_chunk(
     if not features_sequence:
         print(f"Peringatan: 'features_sequence' kosong. Mengembalikan embedding nol.")
         return np.zeros(128, dtype=np.float32)
+    
+     # Handle the SemanticTransformer case separately as it's not a trained nn.Module
+    if model_type == "SemanticTransformer":
+        if semantic_model is None:
+            print("Warning: Semantic model not available. Returning zero embedding.")
+            return np.zeros(384, dtype=np.float32) # all-MiniLM-L6-v2 has 384 dims
+        sequence_as_string = " ".join([f"{k}:{v:.2f}" for step in features_sequence for k, v in step.items()])
+        return semantic_model.encode(sequence_as_string).astype(np.float32)
 
     feature_keys = []
     if os.path.exists(feature_keys_path):
@@ -131,6 +216,18 @@ def generate_embedding_for_chunk(
         input_dim = state_dict['encoder.0.weight'].shape[1]
         latent_dim = state_dict['encoder.2.bias'].shape[0]
         model = DWTAutoencoder(input_dim=input_dim, latent_dim=latent_dim)
+
+    elif model_type == "TransformerAutoencoder":
+        latent_dim = state_dict['encoder_fc.bias'].shape[0]
+        # Infer original num_features from the input_projection layer
+        num_features = state_dict['input_projection.weight'].shape[1]
+        model_dim = state_dict['input_projection.weight'].shape[0]
+        sequence_length = state_dict['encoder_fc.weight'].shape[1] // model_dim
+        # Infer nhead and num_layers from state_dict keys
+        nhead = state_dict['transformer_encoder.layers.0.self_attn.in_proj_weight'].shape[0] // (3 * model_dim)
+        dim_feedforward = state_dict['transformer_encoder.layers.0.linear1.weight'].shape[0]
+        num_layers = len({key.split('.')[2] for key in state_dict if 'transformer_encoder.layers' in key})
+        model = TransformerAutoencoder(num_features=num_features, sequence_length=sequence_length, latent_dim=latent_dim, nhead=nhead, dim_feedforward=dim_feedforward, num_layers=num_layers)
     
     else:
         raise ValueError(f"Tipe model tidak dikenal: {model_type}")
@@ -141,7 +238,7 @@ def generate_embedding_for_chunk(
     model.eval()
 
     with torch.no_grad():
-        if model_type == "Time2Vec":
+        if model_type in ["Time2Vec", "TransformerAutoencoder"]:
             embedding_result, _ = model(input_tensor.unsqueeze(0))
         else:
             flat_input_tensor = input_tensor.view(1, -1)

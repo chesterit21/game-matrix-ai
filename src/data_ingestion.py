@@ -94,6 +94,75 @@ def update_training_game_status(connection_string: str, game_code: str):
         print(f"Kesalahan database saat mengupdate status: {ex}")
         raise
 
+
+def feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Membuat fitur-fitur baru yang kaya dari data mentah untuk meningkatkan performa model.
+    """
+    df_eng = df.copy()
+    if 'LogResult' not in df_eng.columns:
+        return df_eng
+
+    df_eng['LogResult_Str'] = df_eng['LogResult'].astype(str).str.zfill(4)
+
+    # Fitur Target (untuk model klasifikasi/regresi) - memprediksi setiap digit
+    for i in range(4):
+        df_eng[f'digit_{i+1}'] = pd.to_numeric(df_eng['LogResult_Str'].str[i], errors='coerce')
+
+    # Fitur Jump (Delta)
+    df_eng['periode_jump'] = df_eng['Periode'].diff().fillna(0)
+    numeric_result = pd.to_numeric(df_eng['LogResult'], errors='coerce')
+    df_eng['result_jump'] = numeric_result.diff().fillna(0)
+
+    # Fitur Statistik Rolling
+    window_sizes = [5, 10, 20]
+    for window in window_sizes:
+        df_eng[f'result_roll_mean_{window}'] = df_eng['result_jump'].rolling(window=window).mean().fillna(0)
+        df_eng[f'result_roll_std_{window}'] = df_eng['result_jump'].rolling(window=window).std().fillna(0)
+
+    # Fitur Domain
+    df_eng['is_even'] = (numeric_result % 2 == 0).astype(int)
+    df_eng['is_small'] = (numeric_result < 5000).astype(int)
+    
+    df_eng = df_eng.drop(columns=['LogResult_Str'])
+    df_eng = df_eng.fillna(0)
+
+    return df_eng
+
+def prepare_tabular_data(df: pd.DataFrame):
+    """
+    Mempersiapkan data dalam format tabular untuk model seperti XGBoost.
+    Setiap baris adalah fitur dari satu timestep, targetnya adalah digit dari timestep berikutnya.
+    """
+    if df.shape[0] < 2:
+        return pd.DataFrame(), pd.DataFrame()
+
+    df_featured = feature_engineering(df)
+    
+    original_digit_cols = [f'digit_{i+1}' for i in range(4)]
+    shifted_target_cols = [f'target_digit_{i+1}' for i in range(4)]
+
+    # Ensure original digit columns exist before trying to shift them
+    if not all(col in df_featured.columns for col in original_digit_cols):
+        return pd.DataFrame(), pd.DataFrame()
+    
+    # Shift target columns to align with the previous timestep's features
+    for i, col in enumerate(original_digit_cols):
+        df_featured[shifted_target_cols[i]] = df_featured[col].shift(-1)
+        
+    # Drop rows with NaN targets (the last row)
+    df_featured = df_featured.dropna(subset=shifted_target_cols)
+
+    # Define feature columns by excluding identifiers and all target-related columns
+    # Also exclude 'LogResult' if it still exists, just in case.
+    cols_to_exclude = ['GameCode', 'DateResultInGame', 'Periode', 'Periode_DT', 'LogResult'] + original_digit_cols + shifted_target_cols
+    feature_cols = [col for col in df_featured.columns if col not in cols_to_exclude]
+    
+    X = df_featured[feature_cols]
+    y = df_featured[shifted_target_cols]
+    
+    return X, y
+
 def preprocess_data_for_embedding(
     df: pd.DataFrame, 
     chunk_size: int, 
@@ -103,7 +172,10 @@ def preprocess_data_for_embedding(
     """Melakukan pra-pemrosesan data dan mengubahnya menjadi chunk untuk embedding."""
     processed_chunks = []
     try:
-        df_processed = df.copy()
+        # Terapkan feature engineering
+        df_engineered = feature_engineering(df)
+
+        df_processed = df_engineered.copy()
         if 'DateResultInGame' in df_processed.columns:
             cleaned_date_str = df_processed['DateResultInGame'].astype(str).str.replace(r'^\w+,\s*', '', regex=True)
             df_processed['Periode_DT'] = pd.to_datetime(cleaned_date_str, format='%d %b %Y', errors='coerce')
@@ -119,28 +191,24 @@ def preprocess_data_for_embedding(
         df_processed['month'] = df_processed['Periode_DT'].dt.month
         df_processed['year'] = df_processed['Periode_DT'].dt.year
 
-        if 'LogResult' in df_processed.columns:
-            imputer_str = SimpleImputer(strategy='most_frequent')
-            df_processed[['LogResult']] = imputer_str.fit_transform(df_processed[['LogResult']])
-            df_processed['LogResult'] = df_processed['LogResult'].astype(str)
-            df_processed['log_result_front'] = pd.to_numeric(df_processed['LogResult'].str[0:2], errors='coerce')
-            df_processed['log_result_mid'] = pd.to_numeric(df_processed['LogResult'].str[1:3], errors='coerce')
-            df_processed['log_result_back'] = pd.to_numeric(df_processed['LogResult'].str[2:4], errors='coerce')
-            categorical_cols = ['log_result_front', 'log_result_mid', 'log_result_back']
-            for col in categorical_cols: df_processed[col] = df_processed[col].fillna(-1)
-
-        numerical_cols = ['As', 'Kop', 'Kepala', 'Ekor', 'Id']
-        imputer_num = SimpleImputer(strategy='mean')
-        df_processed[numerical_cols] = imputer_num.fit_transform(df_processed[numerical_cols])
-        scaler = MinMaxScaler()
-        df_processed[numerical_cols] = scaler.fit_transform(df_processed[numerical_cols])
-        joblib.dump(scaler, scaler_path)
-
+        # Best Practice: Define the final feature set BEFORE scaling to ensure consistency.
         columns_to_drop = ['GameCode', 'LogResult', 'DateResultInGame', 'Periode', 'Periode_DT']
-        features_df = df_processed.drop(columns=[col for col in columns_to_drop if col in df_processed.columns])
-        all_feature_keys = sorted(list(features_df.columns))
+        features_df_unscaled = df_processed.drop(columns=[col for col in columns_to_drop if col in df_processed.columns])
+        all_feature_keys = sorted(list(features_df_unscaled.columns))
+
+        # Impute and Scale ONLY the final features.
+        # This ensures the scaler is trained on the exact same columns as the models.
+        imputer_num = SimpleImputer(strategy='mean')
+        features_df_imputed = pd.DataFrame(imputer_num.fit_transform(features_df_unscaled), columns=all_feature_keys)
+        
+        scaler = MinMaxScaler()
+        features_df_scaled = pd.DataFrame(scaler.fit_transform(features_df_imputed), columns=all_feature_keys)
+        
+        # Save the correctly trained scaler and the corresponding feature keys.
+        joblib.dump(scaler, scaler_path)
         with open(feature_keys_path, 'w') as f: json.dump(all_feature_keys, f)
 
+        features_df = features_df_scaled
         step_size = chunk_size - overlap
         for i in range(0, len(features_df) - chunk_size + 1, step_size):
             chunk_data_sequence = features_df.iloc[i:i + chunk_size].to_dict(orient='records')
