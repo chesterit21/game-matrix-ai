@@ -1,0 +1,8 @@
+pandas
+numpy
+torch
+scikit-learn
+chromadb
+pymssql
+joblib
+SQLAlchemy
