@@ -17,7 +17,7 @@ ARTIFACTS_DIR = "artifacts"
 # This is the most critical parameter. It defines the fixed number of historical
 # data points (rows) used for training and for creating embeddings.
 # It MUST be consistent across all scripts.
-PIPELINE_WINDOW_SIZE = 200
+PIPELINE_WINDOW_SIZE =  210
 
 # Overlap for chunking data for ChromaDB ingestion.
 OVERLAP_SIZE = 2

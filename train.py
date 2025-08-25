@@ -25,7 +25,7 @@ print(f"Menggunakan perangkat: {device}")
 TRAINING_AUGMENTATION_FACTOR = 2.0
 
 SQL_QUERY_MASTER = "SELECT GameCode FROM TRAININGGAME WHERE IsActive = 1."
-SQL_QUERY_LOG = "SELECT Id, GameCode, Periode, LogResult, [As], Kop, Kepala, Ekor,DateResultInGame FROM LogGame WHERE GameCode='{gameCode}' AND Periode > (SELECT MAX(Periode) FROM LogGame WHERE GameCode = '{gameCode}')-210 ORDER BY Periode ASC;"
+SQL_QUERY_LOG = "SELECT Id, GameCode, Periode, LogResult, [As], Kop, Kepala, Ekor,DateResultInGame FROM LogGame WHERE GameCode='{gameCode}' AND Periode > (SELECT MAX(Periode) FROM LogGame WHERE GameCode = '{gameCode}')-365 ORDER BY Periode ASC;"
 
 def augment_training_data(historical_data: pd.DataFrame, augmentation_factor: float) -> pd.DataFrame:
     """
