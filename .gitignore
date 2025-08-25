@@ -2,3 +2,4 @@
 /chroma_db
 /trained_models
 /docs
+*.sql

@@ -327,3 +327,72 @@ def predict_with_lstm(
         
         # Pindahkan hasil kembali ke CPU untuk operasi selanjutnya
         return prediction_output.squeeze(0).cpu().numpy()
+
+# --- Generative Adversarial Network (Placeholder) ---
+class GANGenerator(nn.Module):
+    """
+    Bagian Generator dari GAN. Mengambil noise acak dan menghasilkan urutan fitur.
+    Ini adalah placeholder untuk implementasi yang lebih kompleks (misalnya, menggunakan lapisan LSTM/Conv1D).
+    """
+    def __init__(self, latent_dim: int, seq_len: int, feature_dim: int):
+        super(GANGenerator, self).__init__()
+        self.seq_len = seq_len
+        self.feature_dim = feature_dim
+        self.network = nn.Sequential(
+            nn.Linear(latent_dim, 256),
+            nn.LeakyReLU(0.2),
+            nn.Linear(256, 512),
+            nn.LeakyReLU(0.2),
+            nn.Linear(512, seq_len * feature_dim),
+            nn.Tanh() # Tanh umum untuk GAN untuk menskalakan output ke [-1, 1]
+        )
+
+    def forward(self, z):
+        img_flat = self.network(z)
+        # Ubah bentuk menjadi (batch_size, seq_len, feature_dim)
+        return img_flat.view(img_flat.size(0), self.seq_len, self.feature_dim)
+
+class GANDiscriminator(nn.Module):
+    """
+    Bagian Diskriminator dari GAN. Mengambil urutan fitur dan mengklasifikasikannya sebagai asli atau palsu.
+    """
+    def __init__(self, seq_len: int, feature_dim: int):
+        super(GANDiscriminator, self).__init__()
+        self.network = nn.Sequential(
+            nn.Linear(seq_len * feature_dim, 512),
+            nn.LeakyReLU(0.2),
+            nn.Linear(512, 256),
+            nn.LeakyReLU(0.2),
+            nn.Linear(256, 1),
+            nn.Sigmoid() # Menghasilkan probabilitas
+        )
+
+    def forward(self, seq):
+        seq_flat = seq.view(seq.size(0), -1)
+        return self.network(seq_flat)
+
+class GANModel:
+    """
+    Wrapper untuk GAN yang akan digunakan untuk generasi. Kita hanya memerlukan generator untuk prediksi.
+    Logika training akan lebih kompleks dan berada di train.py.
+    """
+    def __init__(self, latent_dim, seq_len, feature_dim):
+        self.generator = GANGenerator(latent_dim, seq_len, feature_dim).to(device)
+
+    def generate(self, num_samples: int, latent_dim: int):
+        self.generator.eval()
+        with torch.no_grad():
+            noise = torch.randn(num_samples, latent_dim).to(device)
+            generated_sequences = self.generator(noise)
+            # Output dari Tanh adalah [-1, 1]. Pre-processing menggunakan MinMaxScaler [0, 1].
+            # Kita perlu menskalakan kembali outputnya.
+            return (generated_sequences + 1) / 2
+
+    def save_model(self, path):
+        os.makedirs(path, exist_ok=True)
+        torch.save(self.generator.state_dict(), os.path.join(path, "gan_generator.pth"))
+
+    def load_model(self, path):
+        generator_path = os.path.join(path, "gan_generator.pth")
+        if os.path.exists(generator_path):
+            self.generator.load_state_dict(torch.load(generator_path, map_location=device))
